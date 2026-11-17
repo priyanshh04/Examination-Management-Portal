@@ -44,10 +44,18 @@ def daily_reminders():
     db.close(); return {'found':len(rows),'sent':sent}
 
 @celery.task(name='emp.monthly_report')
-def monthly_report():
+def monthly_report(year=None, month=None):
+    # Default to the current calendar month; explicit year/month supports historical reports.
+    today=date.today()
+    year=int(year) if year is not None else today.year
+    month=int(month) if month is not None else today.month
+    if year < 2000 or year > 2100 or month < 1 or month > 12:
+        raise ValueError('A valid report year and month are required')
+    first_day=date(year, month, 1)
+    next_month=date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    start_date=first_day.isoformat()
+    end_date=(next_month - timedelta(days=1)).isoformat()
     db=_db()
-    period=db.execute("SELECT date('now','start of month','-1 month') start_date,date('now','start of month','-1 day') end_date").fetchone()
-    start_date,end_date=period['start_date'],period['end_date']
     stats=db.execute("""
         SELECT COUNT(DISTINCT x.id) exams,
                COUNT(DISTINCT ev.student_id) students_evaluated,
@@ -74,16 +82,20 @@ def monthly_report():
     <ul><li>Examinations conducted: {stats['exams']}</li><li>Students evaluated: {stats['students_evaluated']}</li>
     <li>Completed bookings: {stats['completed']}</li><li>Pending evaluations: {stats['pending']}</li></ul>
     <h2>Most active examiners</h2><table border="1" cellpadding="6"><tr><th>Examiner</th><th>Evaluations</th><th>Bookings</th></tr>{examiner_rows}</table></body></html>"""
-    path=os.path.join(os.path.dirname(os.path.dirname(__file__)),'instance','monthly_report.html')
-    os.makedirs(os.path.dirname(path),exist_ok=True)
+    report_dir=os.path.join(os.path.dirname(os.path.dirname(__file__)),'instance')
+    os.makedirs(report_dir,exist_ok=True)
+    path=os.path.join(report_dir,f'monthly_report_{year}_{month:02d}.html')
     with open(path,'w',encoding='utf8') as report_file: report_file.write(report)
+    # Preserve the legacy "latest report" download path as well.
+    latest_path=os.path.join(report_dir,'monthly_report.html')
+    with open(latest_path,'w',encoding='utf8') as report_file: report_file.write(report)
     db.close()
     recipient=os.getenv('ADMIN_REPORT_EMAIL',os.getenv('ADMIN_EMAIL','admin@emp.local'))
     try:
-        sent=_mail('Monthly examination report',report,recipient,allow_webhook=False)
+        sent=_mail(f'Monthly examination report - {year}-{month:02d}',report,recipient,allow_webhook=False)
     except Exception:
         sent=False
-    return {'file':path,'email_sent':sent,'period_start':start_date,'period_end':end_date}
+    return {'file':path,'email_sent':sent,'period_start':start_date,'period_end':end_date,'year':year,'month':month}
 
 @celery.task(name='emp.student_history_export')
 def student_history_export(user_id, job_id):
