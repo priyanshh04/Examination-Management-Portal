@@ -205,7 +205,7 @@ def create_app():
                 if data is None:
                     data=rows('SELECT s.*,x.name examination,x.status examination_status,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id ORDER BY s.date,s.start_time'); set_json(app.config['REDIS_URL'],'emp:slots:v2',data,app.config['CACHE_TTL'])
                 if u['role']=='examiner':data=[x for x in data if x['examiner_id']==u['id']]
-                elif u['role']=='student':data=[x for x in data if x['examination_status'] in ('Slot Creation','Booking Open') and x['status']=='OPEN']
+                elif u['role']=='student':data=[x for x in data if x['examination_status']=='Booking Open' and x['status']=='OPEN']
                 return ok(data)
             data=rows(f'SELECT s.*,x.name examination,x.status examination_status,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id{where} ORDER BY s.date,s.start_time LIMIT ? OFFSET ?',params+[size,offset])
             if u['role']=='examiner':data=[x for x in data if x['examiner_id']==u['id']]
@@ -221,7 +221,7 @@ def create_app():
             if ex[key]:
                 try:
                     boundary=datetime.fromisoformat(ex[key].replace('Z','+00:00')).replace(tzinfo=None)
-                    if (key=='slot_start' and now<boundary) or (key=='slot_end' and now>boundary):return fail(f'Outside the configured {label} period')
+                    if (key=='slot_start' and now<boundary) or (key=='slot_end' and now>=boundary):return fail(f'Outside the configured {label} period')
                 except ValueError:return fail('Examination timeline is invalid')
         examiner_id=u['id'] if u['role']=='examiner' else d.get('examiner_id')
         if u['role']=='admin' and not examiner_id:
@@ -486,7 +486,7 @@ def create_app():
         if b['status']!='Booked': return fail('Only active bookings can be cancelled')
         if u['role']=='student' and b['booking_end']:
             try:
-                if datetime.now()>datetime.fromisoformat(b['booking_end'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Booking cancellation deadline has passed')
+                if datetime.now()>=datetime.fromisoformat(b['booking_end'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Booking cancellation deadline has passed')
             except ValueError:return fail('Examination timeline is invalid')
         db.execute('BEGIN IMMEDIATE')
         current=db.execute('SELECT status FROM bookings WHERE id=?',(bid,)).fetchone()
@@ -560,11 +560,22 @@ def create_app():
         if not s or (u['role']=='examiner' and s['examiner_id']!=u['id']):return fail('Slot not found',404)
         if db.execute('SELECT id FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchone():return fail('Booked slots cannot be deleted')
         if request.method=='PUT':
-            d=request.json or {}; exam=db.execute('SELECT booking_start FROM examinations WHERE id=?',(s['examination_id'],)).fetchone()
-            if u['role']=='examiner' and exam and exam['booking_start']:
-                try:
-                    if datetime.now()>=datetime.fromisoformat(exam['booking_start'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Slots cannot be edited after booking begins')
-                except ValueError:return fail('Examination timeline is invalid')
+            d=request.json or {}; exam=db.execute('SELECT booking_start,status FROM examinations WHERE id=?',(s['examination_id'],)).fetchone()
+            if u['role']=='examiner':
+                if exam and exam['status']=='Booking Open':return fail('Slots cannot be changed after student booking opens')
+                if exam and exam['booking_start']:
+                    try:
+                        if datetime.now()>=datetime.fromisoformat(exam['booking_start'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Slots cannot be edited after booking begins')
+                    except ValueError:return fail('Examination timeline is invalid')
+            booked_count=db.execute('SELECT COUNT(*) n FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchone()['n']
+            try:
+                new_capacity=int(d.get('capacity',s['capacity']))
+                new_date=d.get('date') or s['date']; new_start=d.get('start_time') or s['start_time']; new_end=d.get('end_time') or s['end_time']
+                datetime.strptime(new_date,'%Y-%m-%d')
+                if new_capacity<booked_count or new_capacity<1 or datetime.strptime(new_start,'%H:%M').time()>=datetime.strptime(new_end,'%H:%M').time():return fail('Capacity and time range are invalid or below existing bookings')
+            except (TypeError,ValueError):return fail('Provide a valid date, time range and capacity')
+            examiner_for_overlap=d.get('examiner_id',s['examiner_id'])
+            if db.execute("SELECT id FROM slots WHERE id<>? AND examiner_id=? AND date=? AND start_time<? AND end_time>? AND status<>'CANCELLED'",(sid,examiner_for_overlap,new_date,new_end,new_start)).fetchone():return fail('Overlapping slot for examiner')
             examiner_id=s['examiner_id']
             if d.get('examiner_id') is not None:
                 if u['role']!='admin':return fail('Only Admin can reassign an examiner',403)
@@ -572,5 +583,5 @@ def create_app():
                 if not candidate:return fail('Active examiner not found',404)
                 examiner_id=candidate['id']; db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reassign_examiner','slot',sid,f'examiner_id={examiner_id}'))
             db.execute('UPDATE slots SET examiner_id=?,date=COALESCE(?,date),start_time=COALESCE(?,start_time),end_time=COALESCE(?,end_time),capacity=COALESCE(?,capacity),meeting_link=COALESCE(?,meeting_link) WHERE id=?',(examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),d.get('capacity'),d.get('meeting_link'),sid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot updated'})
-        db.execute('DELETE FROM slots WHERE id=?',(sid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot deleted'})
+        db.execute("UPDATE slots SET status='CANCELLED',available=0 WHERE id=?",(sid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot cancelled'})
     return app
