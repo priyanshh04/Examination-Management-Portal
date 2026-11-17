@@ -138,6 +138,8 @@ def create_app():
         if e:return e
         x=get_db().execute('SELECT x.*,c.name course_name,c.code course_code FROM examinations x JOIN courses c ON c.id=x.course_id WHERE x.id=?',(eid,)).fetchone()
         if not x:return fail('Examination not found',404)
+        if u['role']=='examiner' and not get_db().execute('SELECT 1 FROM exam_assignments WHERE examination_id=? AND examiner_id=? UNION SELECT 1 FROM slots WHERE examination_id=? AND examiner_id=?',(eid,u['id'],eid,u['id'])).fetchone():return fail('Examination is not assigned to you',403)
+        if u['role']=='student' and x['status'] not in ('Slot Creation','Booking Open'):return fail('Examination is not available',403)
         return ok({**dict(x),'rubrics':rows('SELECT * FROM rubrics WHERE examination_id=?',(eid,)),'slots':rows('SELECT s.*,u.name examiner FROM slots s JOIN users u ON u.id=s.examiner_id WHERE s.examination_id=?',(eid,))})
     @app.get('/api/student/examinations')
     def student_examinations():
@@ -195,7 +197,9 @@ def create_app():
             if not clauses and page==1 and size==50:
                 data=get_json(app.config['REDIS_URL'],'emp:slots')
                 if data is None:
-                    data=rows('SELECT s.*,x.name examination,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id ORDER BY s.date,s.start_time'); set_json(app.config['REDIS_URL'],'emp:slots',data,app.config['CACHE_TTL'])
+                    data=rows('SELECT s.*,x.name examination,x.status examination_status,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id ORDER BY s.date,s.start_time'); set_json(app.config['REDIS_URL'],'emp:slots',data,app.config['CACHE_TTL'])
+                if u['role']=='examiner':data=[x for x in data if x['examiner_id']==u['id']]
+                elif u['role']=='student':data=[x for x in data if x['examination_status'] in ('Slot Creation','Booking Open') and x['status']=='OPEN']
                 return ok(data)
             data=rows(f'SELECT s.*,x.name examination,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id{where} ORDER BY s.date,s.start_time LIMIT ? OFFSET ?',params+[size,offset]); return ok(data)
         if u['role'] not in ('admin','examiner'):return fail('Only examiners or admin can create slots',403)
@@ -215,9 +219,19 @@ def create_app():
             first_examiner=db.execute("SELECT id FROM users WHERE role='examiner' AND status='Active' ORDER BY id LIMIT 1").fetchone()
             examiner_id=first_examiner['id'] if first_examiner else None
         if not examiner_id:return fail('An active examiner must exist before creating a slot')
-        overlap=db.execute('SELECT id FROM slots WHERE examiner_id=? AND date=? AND start_time<? AND end_time>?',(examiner_id,d.get('date'),d.get('end_time'),d.get('start_time'))).fetchone()
+        candidate=db.execute("SELECT id FROM users WHERE id=? AND role='examiner' AND status='Active'",(examiner_id,)).fetchone()
+        if not candidate:return fail('Active examiner not found',404)
+        if u['role']=='examiner' and not db.execute('SELECT 1 FROM exam_assignments WHERE examination_id=? AND examiner_id=?',(eid,u['id'])).fetchone():return fail('You are not assigned to this examination',403)
+        try:
+            cap=int(d.get('capacity',1))
+            start=datetime.strptime(d.get('start_time',''),'%H:%M').time()
+            end=datetime.strptime(d.get('end_time',''),'%H:%M').time()
+            datetime.strptime(d.get('date',''),'%Y-%m-%d')
+            if cap<1 or start>=end:return fail('Provide a valid date, time range and positive capacity')
+        except (TypeError,ValueError):return fail('Provide a valid date (YYYY-MM-DD), time (HH:MM) and positive capacity')
+        overlap=db.execute("SELECT id FROM slots WHERE examiner_id=? AND date=? AND start_time<? AND end_time>? AND status<>'CANCELLED'",(examiner_id,d.get('date'),d.get('end_time'),d.get('start_time'))).fetchone()
         if overlap:return fail('Overlapping slot for examiner')
-        cap=int(d.get('capacity',1)); db.execute('INSERT INTO slots(examination_id,examiner_id,date,start_time,end_time,capacity,available,meeting_link) VALUES(?,?,?,?,?,?,?,?)',(eid,examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),cap,cap,d.get('meeting_link'))); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Slot created'},201)
+        db.execute('INSERT INTO slots(examination_id,examiner_id,date,start_time,end_time,capacity,available,meeting_link) VALUES(?,?,?,?,?,?,?,?)',(eid,examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),cap,cap,d.get('meeting_link'))); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Slot created'},201)
     @app.post('/api/bookings')
     def book():
         u,e=auth(['student']);
@@ -289,10 +303,12 @@ def create_app():
         return ok({**dict(b),'rubrics':rows('SELECT * FROM rubrics WHERE examination_id=? ORDER BY id',(b['examination_id'],))})
     @app.get('/api/results')
     def results():
-        u,e=auth();
+        u,e=auth()
         if e:return e
-        q='SELECT ev.*,x.name examination,c.name course,ex.name examiner FROM evaluations ev JOIN bookings b ON b.id=ev.booking_id JOIN slots s ON s.id=b.slot_id JOIN examinations x ON x.id=s.examination_id JOIN courses c ON c.id=x.course_id JOIN users ex ON ex.id=ev.examiner_id WHERE x.published=1 AND b.student_id=?' if u['role']=='student' else 'SELECT ev.*,x.name examination,c.name course,st.name student FROM evaluations ev JOIN bookings b ON b.id=ev.booking_id JOIN slots s ON s.id=b.slot_id JOIN examinations x ON x.id=s.examination_id JOIN courses c ON c.id=x.course_id JOIN users st ON st.id=ev.student_id'
-        return ok(rows(q,(u['id'],) if u['role']=='student' else ()))
+        base='SELECT ev.*,x.name examination,c.name course,ex.name examiner FROM evaluations ev JOIN bookings b ON b.id=ev.booking_id JOIN slots s ON s.id=b.slot_id JOIN examinations x ON x.id=s.examination_id JOIN courses c ON c.id=x.course_id JOIN users ex ON ex.id=ev.examiner_id'
+        if u['role']=='student':return ok(rows(base+' WHERE x.published=1 AND b.student_id=?',(u['id'],)))
+        if u['role']=='examiner':return ok(rows(base+' WHERE ev.examiner_id=?',(u['id'],)))
+        return ok(rows(base))
     @app.get('/api/results/<int:evaluation_id>')
     def result_detail(evaluation_id):
         u,e=auth()
@@ -389,10 +405,14 @@ def create_app():
         if e:return e
         new_slot=(request.json or {}).get('slot_id'); db=get_db()
         try:
-            db.execute('BEGIN IMMEDIATE'); booking=db.execute('SELECT * FROM bookings WHERE id=?',(bid,)).fetchone(); slot=db.execute('SELECT * FROM slots WHERE id=?',(new_slot,)).fetchone()
+            db.execute('BEGIN IMMEDIATE'); booking=db.execute('SELECT b.*,old.examination_id FROM bookings b JOIN slots old ON old.id=b.slot_id WHERE b.id=?',(bid,)).fetchone(); slot=db.execute('SELECT * FROM slots WHERE id=?',(new_slot,)).fetchone()
             if not booking or not slot:return fail('Booking or target slot not found',404)
+            if booking['status']!='Booked':return fail('Only active bookings can be rescheduled')
+            if slot['id']==booking['slot_id']:return fail('Choose a different slot')
+            if slot['examination_id']!=booking['examination_id']:return fail('A booking can only be moved within the same examination')
             if slot['available']<1 or slot['status']!='OPEN':return fail('Target slot is unavailable')
-            db.execute('UPDATE bookings SET slot_id=?,status="Booked" WHERE id=?',(new_slot,bid)); db.execute('UPDATE slots SET available=available+1,status="OPEN" WHERE id=?',(booking['slot_id'],)); db.execute('UPDATE slots SET available=available-1,status=CASE WHEN available-1=0 THEN "FULL" ELSE status END WHERE id=?',(new_slot,)); db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reschedule','booking',bid,f'new_slot={new_slot}')); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Booking rescheduled'})
+            if db.execute('SELECT 1 FROM bookings WHERE student_id=? AND slot_id=? AND status="Booked"',(booking['student_id'],new_slot)).fetchone():return fail('Student already has a booking in the target slot')
+            db.execute('UPDATE bookings SET slot_id=? WHERE id=?',(new_slot,bid)); db.execute('UPDATE slots SET available=MIN(capacity,available+1),status="OPEN" WHERE id=?',(booking['slot_id'],)); db.execute('UPDATE slots SET available=available-1,status=CASE WHEN available-1=0 THEN "FULL" ELSE status END WHERE id=?',(new_slot,)); db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reschedule','booking',bid,f'new_slot={new_slot}')); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Booking rescheduled'})
         except Exception:
             db.rollback(); raise
 
@@ -400,7 +420,11 @@ def create_app():
     def user_update(uid):
         u,e=auth(['admin']);
         if e:return e
-        d=request.json or {}; db=get_db(); db.execute('UPDATE users SET name=COALESCE(?,name),contact=COALESCE(?,contact),department=COALESCE(?,department),status=COALESCE(?,status) WHERE id=? AND role<>"admin"',(d.get('name'),d.get('contact'),d.get('department'),d.get('status'),uid)); db.commit(); return ok({'message':'User updated'})
+        d=request.json or {}; db=get_db()
+        target=db.execute('SELECT role FROM users WHERE id=? AND role<>"admin"',(uid,)).fetchone()
+        if not target:return fail('User not found',404)
+        if d.get('status') not in (None,'Active','Inactive'):return fail('Status must be Active or Inactive')
+        db.execute('UPDATE users SET name=COALESCE(?,name),contact=COALESCE(?,contact),department=COALESCE(?,department),status=COALESCE(?,status) WHERE id=? AND role<>"admin"',(d.get('name'),d.get('contact'),d.get('department'),d.get('status'),uid)); db.commit(); return ok({'message':'User updated'})
 
     @app.get('/api/notifications')
     def notifications():
