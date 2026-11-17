@@ -92,7 +92,7 @@ def create_app():
         elif u['role']=='examiner':
             r['assigned_examinations']=db.execute('SELECT COUNT(DISTINCT examination_id) n FROM slots WHERE examiner_id=?',(u['id'],)).fetchone()['n']; r['created_slots']=db.execute('SELECT COUNT(*) n FROM slots WHERE examiner_id=?',(u['id'],)).fetchone()['n']; r['booked_students']=db.execute('SELECT COUNT(*) n FROM bookings b JOIN slots s ON s.id=b.slot_id WHERE s.examiner_id=? AND b.status="Booked"',(u['id'],)).fetchone()['n']; r['pending_evaluations']=db.execute('SELECT COUNT(*) n FROM bookings b JOIN slots s ON s.id=b.slot_id LEFT JOIN evaluations e ON e.booking_id=b.id WHERE s.examiner_id=? AND e.id IS NULL',(u['id'],)).fetchone()['n']
         else:
-            r['available_examinations']=db.execute("SELECT COUNT(*) n FROM examinations WHERE status IN ('Booking Open','Slot Creation')").fetchone()['n']; r['bookings']=db.execute('SELECT COUNT(*) n FROM bookings WHERE student_id=?',(u['id'],)).fetchone()['n']; r['results']=db.execute('SELECT COUNT(*) n FROM evaluations e JOIN bookings b ON b.id=e.booking_id JOIN examinations x ON x.id=(SELECT examination_id FROM slots WHERE id=b.slot_id) WHERE b.student_id=? AND x.published=1',(u['id'],)).fetchone()['n']
+            r['available_examinations']=db.execute("SELECT COUNT(*) n FROM examinations WHERE status='Booking Open'").fetchone()['n']; r['bookings']=db.execute('SELECT COUNT(*) n FROM bookings WHERE student_id=?',(u['id'],)).fetchone()['n']; r['results']=db.execute('SELECT COUNT(*) n FROM evaluations e JOIN bookings b ON b.id=e.booking_id JOIN examinations x ON x.id=(SELECT examination_id FROM slots WHERE id=b.slot_id) WHERE b.student_id=? AND x.published=1',(u['id'],)).fetchone()['n']
         return ok(r)
     @app.route('/api/courses',methods=['GET','POST'])
     def courses():
@@ -109,9 +109,15 @@ def create_app():
     @app.route('/api/examinations',methods=['GET','POST'])
     def examinations():
         if request.method=='GET':
+            viewer,auth_error=auth()
+            if auth_error:return auth_error
             cached=get_json(app.config['REDIS_URL'],'emp:examinations')
             if cached is None:
                 cached=rows('SELECT x.*,c.code course_code,c.name course_name FROM examinations x JOIN courses c ON c.id=x.course_id ORDER BY x.id DESC'); set_json(app.config['REDIS_URL'],'emp:examinations',cached,app.config['CACHE_TTL'])
+            if viewer['role']=='student':cached=[x for x in cached if x['status']=='Booking Open']
+            elif viewer['role']=='examiner':
+                assigned={r['examination_id'] for r in rows('SELECT examination_id FROM exam_assignments WHERE examiner_id=? UNION SELECT examination_id FROM slots WHERE examiner_id=?',(viewer['id'],viewer['id']))}
+                cached=[x for x in cached if x['id'] in assigned]
             q=request.args.get('q','').lower(); typ=request.args.get('type'); status=request.args.get('status'); filtered=[x for x in cached if (not q or q in x['name'].lower() or q in x['course_name'].lower()) and (not typ or x['type']==typ) and (not status or x['status']==status)]; page,size,offset=paging(); return ok(filtered[offset:offset+size])
         u,e=auth(['admin']);
         if e:return e
@@ -397,6 +403,7 @@ def create_app():
         u,e=auth(['admin']);
         if e:return e
         examiner_id=(request.json or {}).get('examiner_id'); db=get_db()
+        if not db.execute('SELECT id FROM examinations WHERE id=?',(eid,)).fetchone():return fail('Examination not found',404)
         if not db.execute("SELECT id FROM users WHERE id=? AND role='examiner' AND status='Active'",(examiner_id,)).fetchone():return fail('Active examiner not found',404)
         try: db.execute('INSERT INTO exam_assignments(examination_id,examiner_id) VALUES(?,?)',(eid,examiner_id)); db.commit()
         except sqlite3.IntegrityError: return fail('Examiner is already assigned',409)
@@ -495,6 +502,8 @@ def create_app():
     def rubrics(eid):
         u,e=auth()
         if e:return e
+        if u['role']=='student':return fail('Rubrics are available to examiners and Admin only',403)
+        if u['role']=='examiner' and not get_db().execute('SELECT 1 FROM exam_assignments WHERE examination_id=? AND examiner_id=? UNION SELECT 1 FROM slots WHERE examination_id=? AND examiner_id=?',(eid,u['id'],eid,u['id'])).fetchone():return fail('Examination is not assigned to you',403)
         key=f'emp:rubrics:{eid}'; data=get_json(app.config['REDIS_URL'],key)
         if data is None:data=rows('SELECT * FROM rubrics WHERE examination_id=? ORDER BY id',(eid,)); set_json(app.config['REDIS_URL'],key,data,app.config['CACHE_TTL'])
         return ok(data)
