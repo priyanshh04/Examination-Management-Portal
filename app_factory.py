@@ -145,7 +145,7 @@ def create_app():
     def student_examinations():
         u,e=auth(['student'])
         if e:return e
-        q=request.args.get('q','').strip(); typ=request.args.get('type'); params=[]; clauses=["x.status IN ('Slot Creation','Booking Open')"]
+        q=request.args.get('q','').strip(); typ=request.args.get('type'); params=[]; clauses=["x.status='Booking Open'"]
         if q:clauses.append('(x.name LIKE ? OR c.name LIKE ? OR c.code LIKE ?)'); params.extend([f'%{q}%',f'%{q}%',f'%{q}%'])
         if typ:clauses.append('x.type=?');params.append(typ)
         sql='SELECT x.*,c.code course_code,c.name course_name,COUNT(s.id) slot_count,COALESCE(SUM(CASE WHEN s.status="OPEN" THEN s.available ELSE 0 END),0) available_seats FROM examinations x JOIN courses c ON c.id=x.course_id LEFT JOIN slots s ON s.examination_id=x.id WHERE '+' AND '.join(clauses)+' GROUP BY x.id ORDER BY x.created_at DESC'
@@ -195,18 +195,21 @@ def create_app():
                 if request.args.get(key): clauses.append(f'{column}=?'); params.append(request.args[key])
             where=(' WHERE '+' AND '.join(clauses)) if clauses else ''
             if not clauses and page==1 and size==50:
-                data=get_json(app.config['REDIS_URL'],'emp:slots')
+                data=get_json(app.config['REDIS_URL'],'emp:slots:v2')
                 if data is None:
-                    data=rows('SELECT s.*,x.name examination,x.status examination_status,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id ORDER BY s.date,s.start_time'); set_json(app.config['REDIS_URL'],'emp:slots',data,app.config['CACHE_TTL'])
+                    data=rows('SELECT s.*,x.name examination,x.status examination_status,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id ORDER BY s.date,s.start_time'); set_json(app.config['REDIS_URL'],'emp:slots:v2',data,app.config['CACHE_TTL'])
                 if u['role']=='examiner':data=[x for x in data if x['examiner_id']==u['id']]
                 elif u['role']=='student':data=[x for x in data if x['examination_status'] in ('Slot Creation','Booking Open') and x['status']=='OPEN']
                 return ok(data)
-            data=rows(f'SELECT s.*,x.name examination,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id{where} ORDER BY s.date,s.start_time LIMIT ? OFFSET ?',params+[size,offset]); return ok(data)
+            data=rows(f'SELECT s.*,x.name examination,x.status examination_status,u.name examiner FROM slots s JOIN examinations x ON x.id=s.examination_id JOIN users u ON u.id=s.examiner_id{where} ORDER BY s.date,s.start_time LIMIT ? OFFSET ?',params+[size,offset])
+            if u['role']=='examiner':data=[x for x in data if x['examiner_id']==u['id']]
+            elif u['role']=='student':data=[x for x in data if x['examination_status']=='Booking Open' and x['status']=='OPEN']
+            return ok(data)
         if u['role'] not in ('admin','examiner'):return fail('Only examiners or admin can create slots',403)
         d=request.json or {}; exam_ref=str(d.get('examination_id','')).strip(); ex=db.execute('SELECT * FROM examinations WHERE CAST(id AS TEXT)=? OR name=?',(exam_ref,exam_ref)).fetchone()
         if not ex:return fail('Examination not found',404)
         eid=ex['id']
-        if ex['status'] in ('Closed','Completed'):return fail('Slot creation is closed for this examination')
+        if ex['status'] not in ('Slot Creation','Booking Open'):return fail('Slot creation is closed for this examination')
         now=datetime.now()
         for key,label in (('slot_start','slot creation'),('slot_end','slot creation') ):
             if ex[key]:
@@ -231,7 +234,7 @@ def create_app():
         except (TypeError,ValueError):return fail('Provide a valid date (YYYY-MM-DD), time (HH:MM) and positive capacity')
         overlap=db.execute("SELECT id FROM slots WHERE examiner_id=? AND date=? AND start_time<? AND end_time>? AND status<>'CANCELLED'",(examiner_id,d.get('date'),d.get('end_time'),d.get('start_time'))).fetchone()
         if overlap:return fail('Overlapping slot for examiner')
-        db.execute('INSERT INTO slots(examination_id,examiner_id,date,start_time,end_time,capacity,available,meeting_link) VALUES(?,?,?,?,?,?,?,?)',(eid,examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),cap,cap,d.get('meeting_link'))); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Slot created'},201)
+        db.execute('INSERT INTO slots(examination_id,examiner_id,date,start_time,end_time,capacity,available,meeting_link) VALUES(?,?,?,?,?,?,?,?)',(eid,examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),cap,cap,d.get('meeting_link'))); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot created'},201)
     @app.post('/api/bookings')
     def book():
         u,e=auth(['student']);
@@ -240,7 +243,7 @@ def create_app():
         try:
             db.execute('BEGIN IMMEDIATE'); s=db.execute('SELECT s.*,x.name,x.status exam_status,x.booking_start,x.booking_end FROM slots s JOIN examinations x ON x.id=s.examination_id WHERE s.id=?',(d.get('slot_id'),)).fetchone()
             if not s or s['available']<=0 or s['status']!='OPEN': raise ValueError('Slot is full or unavailable')
-            if s['exam_status'] not in ('Booking Open','Slot Creation'): raise ValueError('Booking is not open for this examination')
+            if s['exam_status']!='Booking Open': raise ValueError('Booking is not open for this examination')
             now=datetime.now()
             for key in ('booking_start','booking_end'):
                 if s[key]:
