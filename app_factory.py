@@ -44,7 +44,7 @@ def create_app():
     def index():
         path=os.path.join(app.root_path,'frontend','portal.html')
         with open(path,encoding='utf8') as page_file: html=page_file.read()
-        html=html.replace('Admin credentials come from your .env file.','Demo Admin credentials: admin@emp.local / Admin@123')
+        # Keep credentials out of the rendered page; configure the seeded Admin in .env.
         html=html.replace('<main class="flex-grow-1 p-4">','<main class="flex-grow-1 p-4"><div v-if="me && me.role===\'admin\'" class="text-end mb-2"><a class="btn btn-sm btn-outline-primary" href="/admin/students">Manage students</a></div>')
         html=html.replace('{{x.status}}</td></tr>','{{x.status}}</td><td><button class="btn btn-sm btn-outline-danger" @click="toggleExaminer(x)">{{x.status===\'Active\'?\'Deactivate\':\'Activate\'}}</button><button class="btn btn-sm btn-outline-secondary ms-1" @click="editExaminer(x)">Edit</button></td></tr>')
         html=html.replace('<button class="btn btn-sm btn-outline-danger" @click="deactivateCourse(x.id)">Deactivate</button>','<button class="btn btn-sm btn-outline-danger" @click="deactivateCourse(x.id)">Deactivate</button><button class="btn btn-sm btn-outline-secondary ms-1" @click="editCourse(x)">Edit</button>')
@@ -405,8 +405,8 @@ def create_app():
         if e:return e
         db=get_db();
         if not db.execute('SELECT id FROM courses WHERE id=?',(cid,)).fetchone(): return fail('Course not found',404)
-        if request.method=='DELETE': db.execute('UPDATE courses SET status="Inactive" WHERE id=?',(cid,)); db.commit(); return ok({'message':'Course deactivated'})
-        d=request.json or {}; db.execute('UPDATE courses SET code=COALESCE(?,code),name=COALESCE(?,name),description=COALESCE(?,description),status=COALESCE(?,status) WHERE id=?',(d.get('code'),d.get('name'),d.get('description'),d.get('status'),cid)); db.commit(); return ok({'message':'Course updated'})
+        if request.method=='DELETE': db.execute('UPDATE courses SET status="Inactive" WHERE id=?',(cid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:examinations'); return ok({'message':'Course deactivated'})
+        d=request.json or {}; db.execute('UPDATE courses SET code=COALESCE(?,code),name=COALESCE(?,name),description=COALESCE(?,description),status=COALESCE(?,status) WHERE id=?',(d.get('code'),d.get('name'),d.get('description'),d.get('status'),cid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:examinations'); return ok({'message':'Course updated'})
 
     @app.get('/api/examiners')
     def examiners():
