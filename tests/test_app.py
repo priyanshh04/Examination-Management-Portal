@@ -19,6 +19,8 @@ class PortalTest(unittest.TestCase):
   self.assertEqual(self.c.post('/api/rubrics',json={'examination_id':exam_id,'criterion':'Knowledge','max_marks':100}).status_code,201)
   rubric_id=self.c.get(f'/api/rubrics/{exam_id}').get_json()['data'][0]['id']; self.assertEqual(self.c.put(f'/api/rubrics/{rubric_id}',json={'max_marks':101}).status_code,400)
   self.assertEqual(self.c.post('/api/examiners',json={'name':'Examiner','email':'examiner@test.local','password':'secret1'}).status_code,201)
+  examiner_id=self.c.get('/api/examiners').get_json()['data'][0]['id']
+  self.assertEqual(self.c.post(f'/api/examinations/{exam_id}/assign',json={'examiner_id':examiner_id}).status_code,200)
   self.c.post('/api/auth/logout'); self.assertEqual(self.c.post('/api/auth/login',json={'email':'examiner@test.local','password':'secret1'}).status_code,200)
   self.assertEqual(self.c.post('/api/slots',json={'examination_id':'Oral Exam','date':'2099-01-01','start_time':'10:00','end_time':'10:30','capacity':1}).status_code,201)
   slot_id=self.c.get('/api/slots').get_json()['data'][0]['id']
