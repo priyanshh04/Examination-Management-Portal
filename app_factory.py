@@ -276,12 +276,23 @@ def create_app():
             if request.args.get(key):filters.append(f'{column}=?');params.append(request.args[key])
         if filters:q += ' AND ' + ' AND '.join(filters)
         page,size,offset=paging(); data=rows(q+' ORDER BY b.id DESC LIMIT ? OFFSET ?',params+[size,offset]); return ok(data)
+    @app.get('/api/bookings/<int:bid>/history')
+    def booking_history(bid):
+        u,e=auth()
+        if e:return e
+        booking=get_db().execute('SELECT b.student_id,s.examiner_id FROM bookings b JOIN slots s ON s.id=b.slot_id WHERE b.id=?',(bid,)).fetchone()
+        if not booking:return fail('Booking not found',404)
+        if u['role']=='student' and booking['student_id']!=u['id']:return fail('Booking not found',404)
+        if u['role']=='examiner' and booking['examiner_id']!=u['id']:return fail('Booking not found',404)
+        return ok(rows('SELECT h.*,actor.name actor_name FROM booking_history h LEFT JOIN users actor ON actor.id=h.actor_user_id WHERE h.booking_id=? ORDER BY h.id',(bid,)))
+
     @app.post('/api/evaluations')
     def evaluate():
         u,e=auth(['examiner']);
         if e:return e
         d=request.json or {}; db=get_db(); b=db.execute('SELECT b.*,s.examiner_id,s.examination_id FROM bookings b JOIN slots s ON s.id=b.slot_id WHERE b.id=?',(d.get('booking_id'),)).fetchone()
         if not b or b['examiner_id']!=u['id']:return fail('Booking is not assigned to you',403)
+        if b['status']!='Booked':return fail('Only active booked students can be evaluated')
         if db.execute('SELECT id FROM evaluations WHERE booking_id=?',(b['id'],)).fetchone():return fail('Evaluation already submitted',409)
         rub=rows('SELECT * FROM rubrics WHERE examination_id=?',(b['examination_id'],)); rubric_max={int(i['id']):float(i['max_marks']) for i in rub}; details=d.get('details',[])
         if len({int(i.get('rubric_id',0)) for i in details}) != len(details):return fail('Each rubric criterion may be entered only once')
@@ -424,6 +435,7 @@ def create_app():
             if slot['id']==booking['slot_id']:return fail('Choose a different slot')
             if slot['examination_id']!=booking['examination_id']:return fail('A booking can only be moved within the same examination')
             if slot['available']<1 or slot['status']!='OPEN':return fail('Target slot is unavailable')
+            if db.execute('SELECT 1 FROM bookings b JOIN slots z ON z.id=b.slot_id WHERE b.student_id=? AND z.examination_id=? AND b.status="Booked" AND b.id<>?',(booking['student_id'],booking['examination_id'],bid)).fetchone():return fail('Student already has an active booking for this examination')
             if db.execute('SELECT 1 FROM bookings WHERE student_id=? AND slot_id=? AND status="Booked"',(booking['student_id'],new_slot)).fetchone():return fail('Student already has a booking in the target slot')
             db.execute('UPDATE bookings SET slot_id=? WHERE id=?',(new_slot,bid))
             db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,old_slot_id,new_slot_id) VALUES(?,?,'rescheduled',?,?)",(bid,u['id'],booking['slot_id'],new_slot))
@@ -476,6 +488,9 @@ def create_app():
             try:
                 if datetime.now()>datetime.fromisoformat(b['booking_end'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Booking cancellation deadline has passed')
             except ValueError:return fail('Examination timeline is invalid')
+        db.execute('BEGIN IMMEDIATE')
+        current=db.execute('SELECT status FROM bookings WHERE id=?',(bid,)).fetchone()
+        if not current or current['status']!='Booked':db.rollback(); return fail('Only active bookings can be cancelled')
         db.execute('UPDATE bookings SET status="Cancelled" WHERE id=?',(bid,))
         db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,old_slot_id) VALUES(?,?,'cancelled',?)",(bid,u['id'],b['slot_id']))
         db.execute('UPDATE slots SET available=MIN(capacity,available+1),status="OPEN" WHERE id=?',(b['slot_id'],)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Booking cancelled'})
