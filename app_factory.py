@@ -260,7 +260,10 @@ def create_app():
                         if str(ex)=='Outside the configured booking period':raise
                         raise ValueError('Examination timeline is invalid')
             if db.execute('SELECT b.id FROM bookings b JOIN slots z ON z.id=b.slot_id WHERE b.student_id=? AND z.examination_id=? AND b.status="Booked"',(u['id'],s['examination_id'])).fetchone(): raise ValueError('You already have a booking for this examination')
-            db.execute('INSERT INTO bookings(student_id,slot_id) VALUES(?,?)',(u['id'],s['id'])); db.execute('UPDATE slots SET available=available-1,status=CASE WHEN available-1=0 THEN "FULL" ELSE status END WHERE id=?',(s['id'],)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Booking confirmed'},201)
+            db.execute('INSERT INTO bookings(student_id,slot_id) VALUES(?,?)',(u['id'],s['id']))
+            booking_id=db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,new_slot_id) VALUES(?,?,'booked',?)",(booking_id,u['id'],s['id']))
+            db.execute('UPDATE slots SET available=available-1,status=CASE WHEN available-1=0 THEN "FULL" ELSE status END WHERE id=?',(s['id'],)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Booking confirmed'},201)
         except ValueError as ex: db.rollback(); return fail(str(ex))
         except sqlite3.IntegrityError: db.rollback(); return fail('Duplicate booking',409)
     @app.get('/api/bookings')
@@ -422,7 +425,9 @@ def create_app():
             if slot['examination_id']!=booking['examination_id']:return fail('A booking can only be moved within the same examination')
             if slot['available']<1 or slot['status']!='OPEN':return fail('Target slot is unavailable')
             if db.execute('SELECT 1 FROM bookings WHERE student_id=? AND slot_id=? AND status="Booked"',(booking['student_id'],new_slot)).fetchone():return fail('Student already has a booking in the target slot')
-            db.execute('UPDATE bookings SET slot_id=? WHERE id=?',(new_slot,bid)); db.execute('UPDATE slots SET available=MIN(capacity,available+1),status="OPEN" WHERE id=?',(booking['slot_id'],)); db.execute('UPDATE slots SET available=available-1,status=CASE WHEN available-1=0 THEN "FULL" ELSE status END WHERE id=?',(new_slot,)); db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reschedule','booking',bid,f'new_slot={new_slot}')); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Booking rescheduled'})
+            db.execute('UPDATE bookings SET slot_id=? WHERE id=?',(new_slot,bid))
+            db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,old_slot_id,new_slot_id) VALUES(?,?,'rescheduled',?,?)",(bid,u['id'],booking['slot_id'],new_slot))
+            db.execute('UPDATE slots SET available=MIN(capacity,available+1),status="OPEN" WHERE id=?',(booking['slot_id'],)); db.execute('UPDATE slots SET available=available-1,status=CASE WHEN available-1=0 THEN "FULL" ELSE status END WHERE id=?',(new_slot,)); db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reschedule','booking',bid,f'old_slot={booking["slot_id"]};new_slot={new_slot}')); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Booking rescheduled'})
         except Exception:
             db.rollback(); raise
 
@@ -471,7 +476,9 @@ def create_app():
             try:
                 if datetime.now()>datetime.fromisoformat(b['booking_end'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Booking cancellation deadline has passed')
             except ValueError:return fail('Examination timeline is invalid')
-        db.execute('UPDATE bookings SET status="Cancelled" WHERE id=?',(bid,)); db.execute('UPDATE slots SET available=MIN(capacity,available+1),status="OPEN" WHERE id=?',(b['slot_id'],)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Booking cancelled'})
+        db.execute('UPDATE bookings SET status="Cancelled" WHERE id=?',(bid,))
+        db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,old_slot_id) VALUES(?,?,'cancelled',?)",(bid,u['id'],b['slot_id']))
+        db.execute('UPDATE slots SET available=MIN(capacity,available+1),status="OPEN" WHERE id=?',(b['slot_id'],)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Booking cancelled'})
 
     @app.get('/api/reports/summary')
     def report_summary():
@@ -549,6 +556,6 @@ def create_app():
                 candidate=db.execute("SELECT id FROM users WHERE id=? AND role='examiner' AND status='Active'",(d['examiner_id'],)).fetchone()
                 if not candidate:return fail('Active examiner not found',404)
                 examiner_id=candidate['id']; db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reassign_examiner','slot',sid,f'examiner_id={examiner_id}'))
-            db.execute('UPDATE slots SET examiner_id=?,date=COALESCE(?,date),start_time=COALESCE(?,start_time),end_time=COALESCE(?,end_time),capacity=COALESCE(?,capacity),meeting_link=COALESCE(?,meeting_link) WHERE id=?',(examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),d.get('capacity'),d.get('meeting_link'),sid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Slot updated'})
-        db.execute('DELETE FROM slots WHERE id=?',(sid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots'); return ok({'message':'Slot deleted'})
+            db.execute('UPDATE slots SET examiner_id=?,date=COALESCE(?,date),start_time=COALESCE(?,start_time),end_time=COALESCE(?,end_time),capacity=COALESCE(?,capacity),meeting_link=COALESCE(?,meeting_link) WHERE id=?',(examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),d.get('capacity'),d.get('meeting_link'),sid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot updated'})
+        db.execute('DELETE FROM slots WHERE id=?',(sid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot deleted'})
     return app
