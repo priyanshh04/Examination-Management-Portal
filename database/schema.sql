@@ -12,5 +12,19 @@ CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id IN
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,title TEXT NOT NULL,message TEXT NOT NULL,read INTEGER DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,action TEXT NOT NULL,entity TEXT NOT NULL,entity_id INTEGER,details TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS exam_assignments (id INTEGER PRIMARY KEY AUTOINCREMENT,examination_id INTEGER NOT NULL,examiner_id INTEGER NOT NULL,assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(examination_id,examiner_id),FOREIGN KEY(examination_id) REFERENCES examinations(id) ON DELETE CASCADE,FOREIGN KEY(examiner_id) REFERENCES users(id));
-CREATE INDEX IF NOT EXISTS idx_slots_exam ON slots(examination_id); CREATE INDEX IF NOT EXISTS idx_bookings_student ON bookings(student_id);
+CREATE TABLE IF NOT EXISTS booking_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ booking_id INTEGER NOT NULL,
+ actor_user_id INTEGER,
+ action TEXT NOT NULL,
+ old_slot_id INTEGER,
+ new_slot_id INTEGER,
+ details TEXT,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY(booking_id) REFERENCES bookings(id),
+ FOREIGN KEY(actor_user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_slots_exam ON slots(examination_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_student ON bookings(student_id);
+CREATE INDEX IF NOT EXISTS idx_booking_history_booking ON booking_history(booking_id,created_at);
 
