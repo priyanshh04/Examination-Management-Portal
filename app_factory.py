@@ -147,7 +147,7 @@ def create_app():
         x=get_db().execute('SELECT x.*,c.name course_name,c.code course_code FROM examinations x JOIN courses c ON c.id=x.course_id WHERE x.id=?',(eid,)).fetchone()
         if not x:return fail('Examination not found',404)
         if u['role']=='examiner' and not get_db().execute('SELECT 1 FROM exam_assignments WHERE examination_id=? AND examiner_id=? UNION SELECT 1 FROM slots WHERE examination_id=? AND examiner_id=?',(eid,u['id'],eid,u['id'])).fetchone():return fail('Examination is not assigned to you',403)
-        if u['role']=='student' and x['status'] not in ('Slot Creation','Booking Open'):return fail('Examination is not available',403)
+        if u['role']=='student' and x['status']!='Booking Open':return fail('Examination is not available',403)
         rubric_data=[] if u['role']=='student' else rows('SELECT * FROM rubrics WHERE examination_id=?',(eid,))
         slot_sql='SELECT s.*,u.name examiner FROM slots s JOIN users u ON u.id=s.examiner_id WHERE s.examination_id=?'
         slot_args=[eid]
