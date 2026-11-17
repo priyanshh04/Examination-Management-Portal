@@ -113,7 +113,7 @@ def create_app():
             if auth_error:return auth_error
             cached=get_json(app.config['REDIS_URL'],'emp:examinations')
             if cached is None:
-                cached=rows('SELECT x.*,c.code course_code,c.name course_name FROM examinations x JOIN courses c ON c.id=x.course_id ORDER BY x.id DESC'); set_json(app.config['REDIS_URL'],'emp:examinations',cached,app.config['CACHE_TTL'])
+                cached=rows("SELECT x.*,c.code course_code,c.name course_name,(SELECT GROUP_CONCAT(u.name, ', ') FROM exam_assignments a JOIN users u ON u.id=a.examiner_id WHERE a.examination_id=x.id) assigned_examiner_names,(SELECT COUNT(*) FROM exam_assignments a WHERE a.examination_id=x.id) assigned_examiner_count FROM examinations x JOIN courses c ON c.id=x.course_id ORDER BY x.id DESC"); set_json(app.config['REDIS_URL'],'emp:examinations',cached,app.config['CACHE_TTL'])
             if viewer['role']=='student':cached=[x for x in cached if x['status']=='Booking Open']
             elif viewer['role']=='examiner':
                 assigned={r['examination_id'] for r in rows('SELECT examination_id FROM exam_assignments WHERE examiner_id=? UNION SELECT examination_id FROM slots WHERE examiner_id=?',(viewer['id'],viewer['id']))}
@@ -442,6 +442,7 @@ def create_app():
         if not db.execute("SELECT id FROM users WHERE id=? AND role='examiner' AND status='Active'",(examiner_id,)).fetchone():return fail('Active examiner not found',404)
         try: db.execute('INSERT INTO exam_assignments(examination_id,examiner_id) VALUES(?,?)',(eid,examiner_id)); db.commit()
         except sqlite3.IntegrityError: return fail('Examiner is already assigned',409)
+        invalidate(app.config['REDIS_URL'],'emp:examinations')
         return ok({'message':'Examiner assigned'})
 
     @app.put('/api/bookings/<int:bid>/reschedule')
