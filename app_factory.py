@@ -217,7 +217,7 @@ def create_app():
         d=request.json or {}; exam_ref=str(d.get('examination_id','')).strip(); ex=db.execute('SELECT * FROM examinations WHERE CAST(id AS TEXT)=? OR name=?',(exam_ref,exam_ref)).fetchone()
         if not ex:return fail('Examination not found',404)
         eid=ex['id']
-        if ex['status'] not in ('Slot Creation','Booking Open'):return fail('Slot creation is closed for this examination')
+        if ex['status']!='Slot Creation':return fail('Slot creation is closed for this examination')
         now=datetime.now()
         for key,label in (('slot_start','slot creation'),('slot_end','slot creation') ):
             if ex[key]:
