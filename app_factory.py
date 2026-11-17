@@ -177,11 +177,17 @@ def create_app():
     def rubric():
         u,e=auth(['admin']);
         if e:return e
-        d=request.json or {}; db=get_db(); exam=db.execute('SELECT max_marks FROM examinations WHERE id=?',(d.get('examination_id'),)).fetchone()
+        d=request.json or {}; db=get_db()
+        if not d.get('criterion') or d.get('max_marks') in (None,''):return fail('Criterion name and maximum marks are required')
+        try:
+            criterion_max=float(d['max_marks']); weightage=float(d.get('weightage',100))
+            if not math.isfinite(criterion_max) or criterion_max<=0 or not math.isfinite(weightage) or weightage<0 or weightage>100:return fail('Rubric marks must be positive and weightage must be between 0 and 100')
+        except (TypeError,ValueError):return fail('Rubric marks and weightage must be numeric')
+        exam=db.execute('SELECT max_marks FROM examinations WHERE id=?',(d.get('examination_id'),)).fetchone()
         if not exam:return fail('Examination not found',404)
         current=db.execute('SELECT COALESCE(SUM(max_marks),0) total FROM rubrics WHERE examination_id=?',(d.get('examination_id'),)).fetchone()['total']
-        if float(current)+float(d.get('max_marks',0))>float(exam['max_marks']):return fail('Rubric marks exceed examination maximum')
-        db.execute('INSERT INTO rubrics(examination_id,criterion,max_marks,weightage,description) VALUES(?,?,?,?,?)',(d.get('examination_id'),d.get('criterion'),d.get('max_marks'),d.get('weightage',100),d.get('description',''))); db.commit(); invalidate(app.config['REDIS_URL'],f"emp:rubrics:{d.get('examination_id')}"); return ok({'message':'Rubric added'},201)
+        if float(current)+criterion_max>float(exam['max_marks']):return fail('Rubric marks exceed examination maximum')
+        db.execute('INSERT INTO rubrics(examination_id,criterion,max_marks,weightage,description) VALUES(?,?,?,?,?)',(d.get('examination_id'),d.get('criterion'),criterion_max,weightage,d.get('description',''))); db.commit(); invalidate(app.config['REDIS_URL'],f"emp:rubrics:{d.get('examination_id')}"); return ok({'message':'Rubric added'},201)
     @app.get('/api/users')
     def users():
         u,e=auth(['admin'])
@@ -555,9 +561,14 @@ def create_app():
         if not rubric_row:return fail('Rubric not found',404)
         if request.method=='DELETE': db.execute('DELETE FROM rubrics WHERE id=?',(rid,))
         else:
-            d=request.json or {}; existing=db.execute('SELECT max_marks FROM rubrics WHERE id=?',(rid,)).fetchone(); exam=db.execute('SELECT max_marks FROM examinations WHERE id=?',(rubric_row['examination_id'],)).fetchone(); proposed=float(d.get('max_marks',existing['max_marks'])); other=db.execute('SELECT COALESCE(SUM(max_marks),0) total FROM rubrics WHERE examination_id=? AND id<>?',(rubric_row['examination_id'],rid)).fetchone()['total']
-            if proposed<0 or float(other)+proposed>float(exam['max_marks']):return fail('Rubric marks exceed examination maximum')
-            db.execute('UPDATE rubrics SET criterion=COALESCE(?,criterion),max_marks=COALESCE(?,max_marks),weightage=COALESCE(?,weightage),description=COALESCE(?,description) WHERE id=?',(d.get('criterion'),d.get('max_marks'),d.get('weightage'),d.get('description'),rid))
+            d=request.json or {}; existing=db.execute('SELECT max_marks,weightage FROM rubrics WHERE id=?',(rid,)).fetchone(); exam=db.execute('SELECT max_marks FROM examinations WHERE id=?',(rubric_row['examination_id'],)).fetchone()
+            try:
+                proposed=float(d.get('max_marks',existing['max_marks'])); weightage=float(d.get('weightage',existing['weightage']))
+                if not math.isfinite(proposed) or proposed<=0 or not math.isfinite(weightage) or weightage<0 or weightage>100:return fail('Rubric marks must be positive and weightage must be between 0 and 100')
+            except (TypeError,ValueError):return fail('Rubric marks and weightage must be numeric')
+            other=db.execute('SELECT COALESCE(SUM(max_marks),0) total FROM rubrics WHERE examination_id=? AND id<>?',(rubric_row['examination_id'],rid)).fetchone()['total']
+            if float(other)+proposed>float(exam['max_marks']):return fail('Rubric marks exceed examination maximum')
+            db.execute('UPDATE rubrics SET criterion=COALESCE(?,criterion),max_marks=?,weightage=?,description=COALESCE(?,description) WHERE id=?',(d.get('criterion'),proposed,weightage,d.get('description'),rid))
         db.commit(); invalidate(app.config['REDIS_URL'],f"emp:rubrics:{rubric_row['examination_id']}"); return ok({'message':'Rubric updated'})
 
     @app.route('/api/examinations/<int:eid>', methods=['PUT','DELETE'])
