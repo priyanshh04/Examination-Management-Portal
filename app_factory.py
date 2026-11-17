@@ -148,7 +148,12 @@ def create_app():
         if not x:return fail('Examination not found',404)
         if u['role']=='examiner' and not get_db().execute('SELECT 1 FROM exam_assignments WHERE examination_id=? AND examiner_id=? UNION SELECT 1 FROM slots WHERE examination_id=? AND examiner_id=?',(eid,u['id'],eid,u['id'])).fetchone():return fail('Examination is not assigned to you',403)
         if u['role']=='student' and x['status'] not in ('Slot Creation','Booking Open'):return fail('Examination is not available',403)
-        return ok({**dict(x),'rubrics':rows('SELECT * FROM rubrics WHERE examination_id=?',(eid,)),'slots':rows('SELECT s.*,u.name examiner FROM slots s JOIN users u ON u.id=s.examiner_id WHERE s.examination_id=?',(eid,))})
+        rubric_data=[] if u['role']=='student' else rows('SELECT * FROM rubrics WHERE examination_id=?',(eid,))
+        slot_sql='SELECT s.*,u.name examiner FROM slots s JOIN users u ON u.id=s.examiner_id WHERE s.examination_id=?'
+        slot_args=[eid]
+        if u['role']=='examiner':slot_sql+=' AND s.examiner_id=?'; slot_args.append(u['id'])
+        elif u['role']=='student':slot_sql+=' AND s.status="OPEN" AND s.available>0'
+        return ok({**dict(x),'rubrics':rubric_data,'slots':rows(slot_sql,slot_args)})
     @app.get('/api/student/examinations')
     def student_examinations():
         u,e=auth(['student'])
