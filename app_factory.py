@@ -573,8 +573,9 @@ def create_app():
         if e:return e
         db=get_db(); s=db.execute('SELECT * FROM slots WHERE id=?',(sid,)).fetchone()
         if not s or (u['role']=='examiner' and s['examiner_id']!=u['id']):return fail('Slot not found',404)
-        if db.execute('SELECT id FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchone():return fail('Booked slots cannot be deleted or changed')
-        exam=db.execute('SELECT booking_start,status FROM examinations WHERE id=?',(s['examination_id'],)).fetchone()
+        active_bookings=db.execute('SELECT id,student_id FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchall()
+        if active_bookings and request.method=='DELETE':return fail('Slots with active bookings cannot be cancelled')
+        exam=db.execute('SELECT booking_start,slot_start,slot_end,status FROM examinations WHERE id=?',(s['examination_id'],)).fetchone()
         if u['role']=='examiner':
             if exam and exam['status']=='Booking Open':return fail('Slots cannot be changed after student booking opens')
             if exam and exam['booking_start']:
@@ -583,7 +584,12 @@ def create_app():
                 except ValueError:return fail('Examination timeline is invalid')
         if request.method=='PUT':
             d=request.json or {}
-            booked_count=db.execute('SELECT COUNT(*) n FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchone()['n']
+            if active_bookings and (u['role']!='admin' or any(d.get(field) is not None for field in ('date','start_time','end_time','capacity'))):return fail('Only Admin may reassign an examiner on a booked slot; booked times and capacity cannot be changed')
+            if u['role']=='examiner' and exam and exam['slot_end']:
+                try:
+                    if datetime.now()>=datetime.fromisoformat(exam['slot_end'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Slot creation period has ended')
+                except ValueError:return fail('Examination timeline is invalid')
+            booked_count=len(active_bookings)
             try:
                 new_capacity=int(d.get('capacity',s['capacity']))
                 new_date=d.get('date') or s['date']; new_start=d.get('start_time') or s['start_time']; new_end=d.get('end_time') or s['end_time']
@@ -597,7 +603,12 @@ def create_app():
                 if u['role']!='admin':return fail('Only Admin can reassign an examiner',403)
                 candidate=db.execute("SELECT id FROM users WHERE id=? AND role='examiner' AND status='Active'",(d['examiner_id'],)).fetchone()
                 if not candidate:return fail('Active examiner not found',404)
-                examiner_id=candidate['id']; db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reassign_examiner','slot',sid,f'examiner_id={examiner_id}'))
+                examiner_id=candidate['id']
+                db.execute('INSERT OR IGNORE INTO exam_assignments(examination_id,examiner_id) VALUES(?,?)',(s['examination_id'],examiner_id))
+                db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reassign_examiner','slot',sid,f'examiner_id={examiner_id}'))
+                for booking in active_bookings:
+                    db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,old_slot_id,new_slot_id,details) VALUES(?,?,'examiner_reassigned',?,?,?)",(booking['id'],u['id'],sid,sid,f'examiner_id={examiner_id}'))
+                    db.execute('INSERT INTO notifications(user_id,title,message) VALUES(?,?,?)',(booking['student_id'],'Examiner reassigned','Your examination examiner has been updated by Admin.'))
             db.execute('UPDATE slots SET examiner_id=?,date=?,start_time=?,end_time=?,capacity=?,available=?,status=CASE WHEN ?=0 THEN "FULL" ELSE "OPEN" END,meeting_link=COALESCE(?,meeting_link) WHERE id=?',(examiner_id,new_date,new_start,new_end,new_capacity,new_capacity-booked_count,new_capacity-booked_count,d.get('meeting_link'),sid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot updated'})
         db.execute("UPDATE slots SET status='CANCELLED',available=0 WHERE id=?",(sid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot cancelled'})
     return app
