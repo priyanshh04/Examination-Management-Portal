@@ -14,7 +14,7 @@ class PortalTest(unittest.TestCase):
   self.assertEqual(self.c.post('/api/auth/login',json={'email':'admin@emp.local','password':'Admin@123'}).status_code,200)
   course=self.c.post('/api/courses',json={'code':'CS101','name':'Computer Science'}).get_json()['data']
   courses=self.c.get('/api/courses').get_json()['data']; course_id=next(x['id'] for x in courses if x['code']=='CS101')
-  self.c.post('/api/examinations',json={'course_id':'CS101','name':'Oral Exam','type':'Viva','duration':30,'max_marks':100,'status':'Booking Open'})
+  self.c.post('/api/examinations',json={'course_id':'CS101','name':'Oral Exam','type':'Viva','duration':30,'max_marks':100,'status':'Slot Creation'})
   exam_id=self.c.get('/api/examinations').get_json()['data'][0]['id']
   self.assertEqual(self.c.post('/api/rubrics',json={'examination_id':exam_id,'criterion':'Knowledge','max_marks':100}).status_code,201)
   rubric_id=self.c.get(f'/api/rubrics/{exam_id}').get_json()['data'][0]['id']; self.assertEqual(self.c.put(f'/api/rubrics/{rubric_id}',json={'max_marks':101}).status_code,400)
@@ -24,6 +24,8 @@ class PortalTest(unittest.TestCase):
   self.c.post('/api/auth/logout'); self.assertEqual(self.c.post('/api/auth/login',json={'email':'examiner@test.local','password':'secret1'}).status_code,200)
   self.assertEqual(self.c.post('/api/slots',json={'examination_id':'Oral Exam','date':'2099-01-01','start_time':'10:00','end_time':'10:30','capacity':1}).status_code,201)
   slot_id=self.c.get('/api/slots').get_json()['data'][0]['id']
+  self.c.post('/api/auth/logout'); self.c.post('/api/auth/login',json={'email':'admin@emp.local','password':'Admin@123'})
+  self.assertEqual(self.c.put(f'/api/examinations/{exam_id}',json={'status':'Booking Open'}).status_code,200)
   self.c.post('/api/auth/logout'); self.c.post('/api/auth/register',json={'name':'Student','email':'student@test.local','password':'secret1'}); self.c.post('/api/auth/login',json={'email':'student@test.local','password':'secret1'})
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,201)
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,400)
