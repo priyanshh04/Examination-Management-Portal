@@ -558,15 +558,16 @@ def create_app():
         if e:return e
         db=get_db(); s=db.execute('SELECT * FROM slots WHERE id=?',(sid,)).fetchone()
         if not s or (u['role']=='examiner' and s['examiner_id']!=u['id']):return fail('Slot not found',404)
-        if db.execute('SELECT id FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchone():return fail('Booked slots cannot be deleted')
+        if db.execute('SELECT id FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchone():return fail('Booked slots cannot be deleted or changed')
+        exam=db.execute('SELECT booking_start,status FROM examinations WHERE id=?',(s['examination_id'],)).fetchone()
+        if u['role']=='examiner':
+            if exam and exam['status']=='Booking Open':return fail('Slots cannot be changed after student booking opens')
+            if exam and exam['booking_start']:
+                try:
+                    if datetime.now()>=datetime.fromisoformat(exam['booking_start'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Slots cannot be changed after booking begins')
+                except ValueError:return fail('Examination timeline is invalid')
         if request.method=='PUT':
-            d=request.json or {}; exam=db.execute('SELECT booking_start,status FROM examinations WHERE id=?',(s['examination_id'],)).fetchone()
-            if u['role']=='examiner':
-                if exam and exam['status']=='Booking Open':return fail('Slots cannot be changed after student booking opens')
-                if exam and exam['booking_start']:
-                    try:
-                        if datetime.now()>=datetime.fromisoformat(exam['booking_start'].replace('Z','+00:00')).replace(tzinfo=None):return fail('Slots cannot be edited after booking begins')
-                    except ValueError:return fail('Examination timeline is invalid')
+            d=request.json or {}
             booked_count=db.execute('SELECT COUNT(*) n FROM bookings WHERE slot_id=? AND status="Booked"',(sid,)).fetchone()['n']
             try:
                 new_capacity=int(d.get('capacity',s['capacity']))
@@ -582,6 +583,6 @@ def create_app():
                 candidate=db.execute("SELECT id FROM users WHERE id=? AND role='examiner' AND status='Active'",(d['examiner_id'],)).fetchone()
                 if not candidate:return fail('Active examiner not found',404)
                 examiner_id=candidate['id']; db.execute('INSERT INTO audit_log(user_id,action,entity,entity_id,details) VALUES(?,?,?,?,?)',(u['id'],'reassign_examiner','slot',sid,f'examiner_id={examiner_id}'))
-            db.execute('UPDATE slots SET examiner_id=?,date=COALESCE(?,date),start_time=COALESCE(?,start_time),end_time=COALESCE(?,end_time),capacity=COALESCE(?,capacity),meeting_link=COALESCE(?,meeting_link) WHERE id=?',(examiner_id,d.get('date'),d.get('start_time'),d.get('end_time'),d.get('capacity'),d.get('meeting_link'),sid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot updated'})
+            db.execute('UPDATE slots SET examiner_id=?,date=?,start_time=?,end_time=?,capacity=?,available=?,status=CASE WHEN ?=0 THEN "FULL" ELSE "OPEN" END,meeting_link=COALESCE(?,meeting_link) WHERE id=?',(examiner_id,new_date,new_start,new_end,new_capacity,new_capacity-booked_count,new_capacity-booked_count,d.get('meeting_link'),sid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot updated'})
         db.execute("UPDATE slots SET status='CANCELLED',available=0 WHERE id=?",(sid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Slot cancelled'})
     return app
