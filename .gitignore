@@ -26,6 +26,8 @@ env/
 *.log
 
 # Generated files
+instance/*.csv
+instance/monthly_report.html
 exports/
 reports/
 *.tmp
