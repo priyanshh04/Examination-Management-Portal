@@ -50,14 +50,14 @@ def monthly_report():
     start_date,end_date=period['start_date'],period['end_date']
     stats=db.execute("""
         SELECT COUNT(DISTINCT x.id) exams,
-               COUNT(DISTINCT ev.id) students_evaluated,
+               COUNT(DISTINCT ev.student_id) students_evaluated,
                COUNT(DISTINCT CASE WHEN b.status='Completed' THEN b.id END) completed,
                COUNT(DISTINCT CASE WHEN b.status='Booked' AND ev.id IS NULL THEN b.id END) pending
         FROM examinations x
         LEFT JOIN slots s ON s.examination_id=x.id
         LEFT JOIN bookings b ON b.slot_id=s.id
         LEFT JOIN evaluations ev ON ev.booking_id=b.id
-        WHERE s.date BETWEEN ? AND ?
+        WHERE s.date BETWEEN ? AND ? AND x.status='Completed'
     """,(start_date,end_date)).fetchone()
     top=db.execute("""
         SELECT u.name,COUNT(DISTINCT ev.id) evaluations,COUNT(DISTINCT b.id) bookings
@@ -87,10 +87,26 @@ def monthly_report():
 
 @celery.task(name='emp.student_history_export')
 def student_history_export(user_id, job_id):
-    db=_db(); rows=db.execute('SELECT x.name examination,c.name course,s.date,ex.name examiner,COALESCE(ev.total_marks,"") marks,b.status FROM bookings b JOIN slots s ON s.id=b.slot_id JOIN examinations x ON x.id=s.examination_id JOIN courses c ON c.id=x.course_id JOIN users ex ON ex.id=s.examiner_id LEFT JOIN evaluations ev ON ev.booking_id=b.id WHERE b.student_id=?',(user_id,)).fetchall(); path=os.path.join(os.path.dirname(os.path.dirname(__file__)),'instance',f'export_{job_id}.csv'); os.makedirs(os.path.dirname(path),exist_ok=True)
-    with open(path,'w',newline='',encoding='utf8') as f:
-        w=csv.writer(f); w.writerow(['Student ID','Examination Name','Course','Examination Date','Examiner','Marks Obtained','Booking Status']); w.writerows([[user_id,r['examination'],r['course'],r['date'],r['examiner'],r['marks'],r['status']] for r in rows])
-    db.execute('UPDATE jobs SET status="Completed",filename=? WHERE id=?',(path,job_id)); db.execute('INSERT INTO notifications(user_id,title,message) VALUES(?,?,?)',(user_id,'Export ready','Your examination history CSV is ready to download.')); db.commit(); db.close(); return path
+    db=_db()
+    path=os.path.join(os.path.dirname(os.path.dirname(__file__)),'instance',f'export_{job_id}.csv')
+    try:
+        records=db.execute('SELECT x.name examination,c.name course,s.date,ex.name examiner,COALESCE(ev.total_marks,"") marks,b.status FROM bookings b JOIN slots s ON s.id=b.slot_id JOIN examinations x ON x.id=s.examination_id JOIN courses c ON c.id=x.course_id JOIN users ex ON ex.id=s.examiner_id LEFT JOIN evaluations ev ON ev.booking_id=b.id WHERE b.student_id=?',(user_id,)).fetchall()
+        os.makedirs(os.path.dirname(path),exist_ok=True)
+        with open(path,'w',newline='',encoding='utf8') as output:
+            writer=csv.writer(output)
+            writer.writerow(['Student ID','Examination Name','Course','Examination Date','Examiner','Marks Obtained','Booking Status'])
+            writer.writerows([[user_id,r['examination'],r['course'],r['date'],r['examiner'],r['marks'],r['status']] for r in records])
+        db.execute('UPDATE jobs SET status="Completed",filename=? WHERE id=?',(path,job_id))
+        db.execute('INSERT INTO notifications(user_id,title,message) VALUES(?,?,?)',(user_id,'Export ready','Your examination history CSV is ready to download.'))
+        db.commit()
+        return path
+    except Exception:
+        db.execute('UPDATE jobs SET status="Failed" WHERE id=?',(job_id,))
+        db.execute('INSERT INTO notifications(user_id,title,message) VALUES(?,?,?)',(user_id,'Export failed','Your examination history export could not be generated. Please try again.'))
+        db.commit()
+        raise
+    finally:
+        db.close()
 
 def register_tasks(app): return make_celery(app)
 
