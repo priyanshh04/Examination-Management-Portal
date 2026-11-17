@@ -1,4 +1,4 @@
-import os, csv, io, json, sqlite3, secrets
+import os, csv, io, json, sqlite3, secrets, math
 from datetime import datetime
 from flask import Flask, request, jsonify, session, send_file, Response
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -298,14 +298,21 @@ def create_app():
         if b['status']!='Booked':return fail('Only active booked students can be evaluated')
         if db.execute('SELECT id FROM evaluations WHERE booking_id=?',(b['id'],)).fetchone():return fail('Evaluation already submitted',409)
         rub=rows('SELECT * FROM rubrics WHERE examination_id=?',(b['examination_id'],)); rubric_max={int(i['id']):float(i['max_marks']) for i in rub}; details=d.get('details',[])
-        if len({int(i.get('rubric_id',0)) for i in details}) != len(details):return fail('Each rubric criterion may be entered only once')
+        if not rubric_max:return fail('This examination has no evaluation rubric')
+        if not isinstance(details,list) or any(not isinstance(item,dict) for item in details):return fail('Evaluation details must be a list of rubric marks')
+        awarded_by_rubric={}
         for item in details:
             try: awarded=float(item.get('marks',0)); rid=int(item.get('rubric_id'))
             except (TypeError,ValueError):return fail('Invalid rubric marks')
-            if rid not in rubric_max or awarded<0 or awarded>rubric_max[rid]:return fail('Marks exceed a rubric criterion maximum')
-        total=sum(float(i.get('marks',0)) for i in details); maxm=float(db.execute('SELECT max_marks FROM examinations WHERE id=?',(b['examination_id'],)).fetchone()['max_marks'])
-        if total>maxm:return fail('Marks exceed examination maximum')
-        db.execute('INSERT INTO evaluations(booking_id,student_id,examiner_id,total_marks,remarks) VALUES(?,?,?,?,?)',(b['id'],b['student_id'],u['id'],total,d.get('remarks',''))); eid=db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            if not math.isfinite(awarded) or rid not in rubric_max or awarded<0 or awarded>rubric_max[rid]:return fail('Marks exceed a rubric criterion maximum or are invalid')
+            if rid in awarded_by_rubric:return fail('Each rubric criterion may be entered only once')
+            awarded_by_rubric[rid]=awarded
+        if set(awarded_by_rubric)!=set(rubric_max):return fail('Submit marks for every rubric criterion')
+        total=sum(awarded_by_rubric.values()); maxm=float(db.execute('SELECT max_marks FROM examinations WHERE id=?',(b['examination_id'],)).fetchone()['max_marks'])
+        if not math.isfinite(total) or total>maxm:return fail('Marks exceed examination maximum')
+        try:db.execute('INSERT INTO evaluations(booking_id,student_id,examiner_id,total_marks,remarks) VALUES(?,?,?,?,?)',(b['id'],b['student_id'],u['id'],total,d.get('remarks','')))
+        except sqlite3.IntegrityError:return fail('Evaluation already submitted',409)
+        eid=db.execute('SELECT last_insert_rowid()').fetchone()[0]
         for x in details: db.execute('INSERT INTO evaluation_details(evaluation_id,rubric_id,marks,comments) VALUES(?,?,?,?)',(eid,x['rubric_id'],x['marks'],x.get('comments','')))
         db.execute('UPDATE bookings SET status="Completed" WHERE id=?',(b['id'],)); db.commit(); return ok({'message':'Evaluation submitted'})
 
