@@ -90,7 +90,7 @@ def create_app():
             for key,table in [('courses','courses'),('examinations','examinations'),('students','users WHERE role="student"'),('examiners','users WHERE role="examiner"'),('slots','slots'),('bookings','bookings')]: r[key]=db.execute('SELECT COUNT(*) n FROM '+table).fetchone()['n']
             r['pending_evaluations']=db.execute("SELECT COUNT(*) n FROM bookings b LEFT JOIN evaluations e ON e.booking_id=b.id WHERE b.status='Booked' AND e.id IS NULL").fetchone()['n']; r['completed_examinations']=db.execute("SELECT COUNT(*) n FROM examinations WHERE status='Completed'").fetchone()['n']
         elif u['role']=='examiner':
-            r['assigned_examinations']=db.execute('SELECT COUNT(DISTINCT examination_id) n FROM slots WHERE examiner_id=?',(u['id'],)).fetchone()['n']; r['created_slots']=db.execute('SELECT COUNT(*) n FROM slots WHERE examiner_id=?',(u['id'],)).fetchone()['n']; r['booked_students']=db.execute('SELECT COUNT(*) n FROM bookings b JOIN slots s ON s.id=b.slot_id WHERE s.examiner_id=? AND b.status="Booked"',(u['id'],)).fetchone()['n']; r['pending_evaluations']=db.execute('SELECT COUNT(*) n FROM bookings b JOIN slots s ON s.id=b.slot_id LEFT JOIN evaluations e ON e.booking_id=b.id WHERE s.examiner_id=? AND e.id IS NULL',(u['id'],)).fetchone()['n']
+            r['assigned_examinations']=db.execute('SELECT COUNT(*) n FROM (SELECT examination_id FROM exam_assignments WHERE examiner_id=? UNION SELECT examination_id FROM slots WHERE examiner_id=?)',(u['id'],u['id'])).fetchone()['n']; r['created_slots']=db.execute('SELECT COUNT(*) n FROM slots WHERE examiner_id=?',(u['id'],)).fetchone()['n']; r['booked_students']=db.execute('SELECT COUNT(*) n FROM bookings b JOIN slots s ON s.id=b.slot_id WHERE s.examiner_id=? AND b.status="Booked"',(u['id'],)).fetchone()['n']; r['pending_evaluations']=db.execute('SELECT COUNT(*) n FROM bookings b JOIN slots s ON s.id=b.slot_id LEFT JOIN evaluations e ON e.booking_id=b.id WHERE s.examiner_id=? AND b.status="Booked" AND e.id IS NULL',(u['id'],)).fetchone()['n']
         else:
             r['available_examinations']=db.execute("SELECT COUNT(*) n FROM examinations WHERE status='Booking Open'").fetchone()['n']; r['bookings']=db.execute('SELECT COUNT(*) n FROM bookings WHERE student_id=?',(u['id'],)).fetchone()['n']; r['results']=db.execute('SELECT COUNT(*) n FROM evaluations e JOIN bookings b ON b.id=e.booking_id JOIN examinations x ON x.id=(SELECT examination_id FROM slots WHERE id=b.slot_id) WHERE b.student_id=? AND x.published=1',(u['id'],)).fetchone()['n']
         return ok(r)
@@ -257,7 +257,7 @@ def create_app():
                 if s[key]:
                     try:
                         boundary=datetime.fromisoformat(s[key].replace('Z','+00:00')).replace(tzinfo=None)
-                        if (key=='booking_start' and now<boundary) or (key=='booking_end' and now>boundary): raise ValueError('Outside the configured booking period')
+                        if (key=='booking_start' and now<boundary) or (key=='booking_end' and now>=boundary): raise ValueError('Outside the configured booking period')
                     except ValueError as ex:
                         if str(ex)=='Outside the configured booking period':raise
                         raise ValueError('Examination timeline is invalid')
