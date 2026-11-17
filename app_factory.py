@@ -123,6 +123,8 @@ def create_app():
         if e:return e
         d=request.json or {}; fields=['course_id','name','type','duration','max_marks']
         if any(d.get(x) in (None,'') for x in fields): return fail('Course, name, type, duration and maximum marks are required')
+        if d['type'] not in ('Viva','Practical','Project Demo','Assessment'):return fail('Unsupported examination type')
+        if d.get('status','Draft') not in ('Draft','Slot Creation','Booking Open','Closed','Completed'):return fail('Invalid examination status')
         try:
             if int(d['duration'])<=0 or float(d['max_marks'])<=0:return fail('Duration and maximum marks must be positive')
         except (TypeError,ValueError):return fail('Duration and maximum marks must be numeric')
@@ -550,7 +552,18 @@ def create_app():
         if e:return e
         db=get_db()
         if request.method=='DELETE': db.execute('UPDATE examinations SET status="Closed" WHERE id=?',(eid,)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:examinations'); return ok({'message':'Examination closed'})
-        d=request.json or {}; db.execute('UPDATE examinations SET name=COALESCE(?,name),type=COALESCE(?,type),duration=COALESCE(?,duration),max_marks=COALESCE(?,max_marks),status=COALESCE(?,status),instructions=COALESCE(?,instructions),published=COALESCE(?,published) WHERE id=?',(d.get('name'),d.get('type'),d.get('duration'),d.get('max_marks'),d.get('status'),d.get('instructions'),d.get('published'),eid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:examinations'); return ok({'message':'Examination updated'})
+        d=request.json or {}
+        if d.get('status') not in (None,'Draft','Slot Creation','Booking Open','Closed','Completed'):return fail('Invalid examination status')
+        if d.get('type') not in (None,'Viva','Practical','Project Demo','Assessment'):return fail('Unsupported examination type')
+        try:
+            if d.get('duration') is not None and int(d['duration'])<=0:return fail('Duration must be positive')
+            if d.get('max_marks') is not None and float(d['max_marks'])<=0:return fail('Maximum marks must be positive')
+            timeline={key:d.get(key) for key in ('slot_start','slot_end','booking_start','booking_end') if d.get(key)}
+            parsed={key:datetime.fromisoformat(value.replace('Z','+00:00')).replace(tzinfo=None) for key,value in timeline.items()}
+            if 'slot_start' in parsed and 'slot_end' in parsed and parsed['slot_start']>parsed['slot_end']:return fail('Slot creation timeline is inconsistent')
+            if 'booking_start' in parsed and 'booking_end' in parsed and parsed['booking_start']>parsed['booking_end']:return fail('Booking timeline is inconsistent')
+        except (TypeError,ValueError):return fail('Invalid duration, maximum marks or timeline value')
+        db.execute('UPDATE examinations SET name=COALESCE(?,name),type=COALESCE(?,type),duration=COALESCE(?,duration),max_marks=COALESCE(?,max_marks),status=COALESCE(?,status),instructions=COALESCE(?,instructions),published=COALESCE(?,published),slot_start=COALESCE(?,slot_start),slot_end=COALESCE(?,slot_end),booking_start=COALESCE(?,booking_start),booking_end=COALESCE(?,booking_end) WHERE id=?',(d.get('name'),d.get('type'),d.get('duration'),d.get('max_marks'),d.get('status'),d.get('instructions'),d.get('published'),d.get('slot_start'),d.get('slot_end'),d.get('booking_start'),d.get('booking_end'),eid)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:examinations'); return ok({'message':'Examination updated'})
 
     @app.route('/api/slots/<int:sid>', methods=['PUT','DELETE'])
     def slot_delete(sid):
