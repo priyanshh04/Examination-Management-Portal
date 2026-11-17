@@ -13,9 +13,9 @@ def _db():
     path=os.getenv('EMP_DATABASE') or os.path.join(os.path.dirname(os.path.dirname(__file__)), 'instance', 'emp.sqlite3')
     db=sqlite3.connect(path); db.row_factory=sqlite3.Row; return db
 
-def _mail(subject, body, recipient):
+def _mail(subject, body, recipient, allow_webhook=True):
     webhook=os.getenv('NOTIFICATION_WEBHOOK_URL')
-    if webhook:
+    if allow_webhook and webhook:
         payload=json.dumps({'text':f'{subject}\n{body}'}).encode('utf8')
         req=Request(webhook,data=payload,headers={'Content-Type':'application/json'},method='POST')
         with urlopen(req,timeout=15): pass
@@ -80,7 +80,7 @@ def monthly_report():
     db.close()
     recipient=os.getenv('ADMIN_REPORT_EMAIL',os.getenv('ADMIN_EMAIL','admin@emp.local'))
     try:
-        sent=_mail('Monthly examination report',report,recipient)
+        sent=_mail('Monthly examination report',report,recipient,allow_webhook=False)
     except Exception:
         sent=False
     return {'file':path,'email_sent':sent,'period_start':start_date,'period_end':end_date}
