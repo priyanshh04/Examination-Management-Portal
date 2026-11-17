@@ -528,19 +528,42 @@ def create_app():
     def monthly_report_download():
         u,e=auth(['admin']);
         if e:return e
-        path=os.path.join(app.root_path,'instance','monthly_report.html')
-        if not os.path.exists(path):return fail('No monthly report has been generated yet',404)
-        return send_file(path,as_attachment=True,download_name='monthly-examination-report.html',mimetype='text/html')
+        period=request.args.get('period')
+        if period:
+            try:
+                year,month=[int(part) for part in period.split('-',1)]
+                if year<2000 or year>2100 or month<1 or month>12: raise ValueError()
+                filename=f'monthly_report_{year}_{month:02d}.html'
+            except (TypeError,ValueError):
+                return fail('Period must be in YYYY-MM format')
+        else:
+            filename='monthly_report.html'
+        path=os.path.join(app.root_path,'instance',filename)
+        if not os.path.exists(path):return fail('No report has been generated for the selected month yet',404)
+        return send_file(path,as_attachment=True,download_name=f'monthly-examination-report-{period}.html' if period else 'monthly-examination-report.html',mimetype='text/html')
 
     @app.post('/api/reports/monthly/generate')
     def generate_monthly_report():
         u,e=auth(['admin']);
         if e:return e
+        data=request.get_json(silent=True) or {}
         try:
+            period=data.get('period')
+            if period:
+                year,month=[int(part) for part in period.split('-',1)]
+                if year<2000 or year>2100 or month<1 or month>12: raise ValueError()
+            elif data.get('year') is not None or data.get('month') is not None:
+                year=int(data.get('year')); month=int(data.get('month'))
+                if year<2000 or year>2100 or month<1 or month>12: raise ValueError()
+            else:
+                today=datetime.now()
+                year,month=today.year,today.month
             from tasks.scheduled_tasks import monthly_report
-            result=monthly_report.delay()
-            return ok({'status':'Queued','task_id':result.id},202)
-        except Exception as exc:
+            result=monthly_report.delay(year,month)
+            return ok({'status':'Queued','task_id':result.id,'year':year,'month':month},202)
+        except (TypeError,ValueError):
+            return fail('Choose a valid report month in YYYY-MM format')
+        except Exception:
             return fail('Celery is unavailable; start Redis and a worker before generating reports')
 
     @app.get('/api/rubrics/<int:eid>')
