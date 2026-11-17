@@ -8,7 +8,7 @@ class PortalTest(unittest.TestCase):
  def test_admin_login_and_student_register(self):
   r=self.c.post('/api/auth/login',json={'email':'admin@emp.local','password':'Admin@123'}); self.assertEqual(r.status_code,200)
   self.assertEqual(self.c.post('/api/examinations',json={'course_id':9999,'name':'Invalid','type':'Viva','duration':30,'max_marks':100}).status_code,400)
-  self.assertIn(b'Demo Admin credentials: admin@emp.local / Admin@123',self.c.get('/').data)
+  self.assertIn(b'Admin credentials come from your .env file.',self.c.get('/').data)
   self.c.post('/api/auth/logout'); r=self.c.post('/api/auth/register',json={'name':'S','email':'s@test.local','password':'secret1'}); self.assertEqual(r.status_code,201)
  def test_booking_cancellation_and_evaluation_workflow(self):
   self.assertEqual(self.c.post('/api/auth/login',json={'email':'admin@emp.local','password':'Admin@123'}).status_code,200)
@@ -32,6 +32,7 @@ class PortalTest(unittest.TestCase):
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,400)
   self.c.post('/api/auth/logout'); self.c.post('/api/auth/login',json={'email':'student@test.local','password':'secret1'})
   booking_id=self.c.get('/api/bookings').get_json()['data'][0]['id']
+  self.assertEqual(self.c.get(f'/api/bookings/{booking_id}/history').status_code,200)
   self.assertEqual(self.c.post(f'/api/bookings/{booking_id}/cancel').status_code,200)
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,201)
   booking_id=self.c.get('/api/bookings').get_json()['data'][0]['id']
