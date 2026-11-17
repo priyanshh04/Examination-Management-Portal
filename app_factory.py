@@ -265,6 +265,7 @@ def create_app():
             db.execute('INSERT INTO bookings(student_id,slot_id) VALUES(?,?)',(u['id'],s['id']))
             booking_id=db.execute('SELECT last_insert_rowid()').fetchone()[0]
             db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,new_slot_id) VALUES(?,?,'booked',?)",(booking_id,u['id'],s['id']))
+            db.execute('INSERT INTO notifications(user_id,title,message) VALUES(?,?,?)',(u['id'],'Booking confirmed',f'Your booking for {s["name"]} on {s["date"]} at {s["start_time"]} is confirmed.'))
             db.execute('UPDATE slots SET available=available-1,status=CASE WHEN available-1=0 THEN "FULL" ELSE status END WHERE id=?',(s['id'],)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Booking confirmed'},201)
         except ValueError as ex: db.rollback(); return fail(str(ex))
         except sqlite3.IntegrityError: db.rollback(); return fail('Duplicate booking',409)
@@ -495,6 +496,7 @@ def create_app():
         if not current or current['status']!='Booked':db.rollback(); return fail('Only active bookings can be cancelled')
         db.execute('UPDATE bookings SET status="Cancelled" WHERE id=?',(bid,))
         db.execute("INSERT INTO booking_history(booking_id,actor_user_id,action,old_slot_id) VALUES(?,?,'cancelled',?)",(bid,u['id'],b['slot_id']))
+        db.execute('INSERT INTO notifications(user_id,title,message) VALUES(?,?,?)',(b['student_id'],'Booking cancelled','Your examination booking has been cancelled.'))
         db.execute('UPDATE slots SET available=MIN(capacity,available+1),status="OPEN" WHERE id=?',(b['slot_id'],)); db.commit(); invalidate(app.config['REDIS_URL'],'emp:slots:v2'); return ok({'message':'Booking cancelled'})
 
     @app.get('/api/reports/summary')
