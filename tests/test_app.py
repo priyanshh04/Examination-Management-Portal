@@ -8,20 +8,24 @@ class PortalTest(unittest.TestCase):
  def test_admin_login_and_student_register(self):
   r=self.c.post('/api/auth/login',json={'email':'admin@emp.local','password':'Admin@123'}); self.assertEqual(r.status_code,200)
   self.assertEqual(self.c.post('/api/examinations',json={'course_id':9999,'name':'Invalid','type':'Viva','duration':30,'max_marks':100}).status_code,400)
-  self.assertIn(b'Demo Admin credentials: admin@emp.local / Admin@123',self.c.get('/').data)
+  self.assertIn(b'Admin credentials come from your .env file.',self.c.get('/').data)
   self.c.post('/api/auth/logout'); r=self.c.post('/api/auth/register',json={'name':'S','email':'s@test.local','password':'secret1'}); self.assertEqual(r.status_code,201)
  def test_booking_cancellation_and_evaluation_workflow(self):
   self.assertEqual(self.c.post('/api/auth/login',json={'email':'admin@emp.local','password':'Admin@123'}).status_code,200)
   course=self.c.post('/api/courses',json={'code':'CS101','name':'Computer Science'}).get_json()['data']
   courses=self.c.get('/api/courses').get_json()['data']; course_id=next(x['id'] for x in courses if x['code']=='CS101')
-  self.c.post('/api/examinations',json={'course_id':'CS101','name':'Oral Exam','type':'Viva','duration':30,'max_marks':100,'status':'Booking Open'})
+  self.c.post('/api/examinations',json={'course_id':'CS101','name':'Oral Exam','type':'Viva','duration':30,'max_marks':100,'status':'Slot Creation'})
   exam_id=self.c.get('/api/examinations').get_json()['data'][0]['id']
   self.assertEqual(self.c.post('/api/rubrics',json={'examination_id':exam_id,'criterion':'Knowledge','max_marks':100}).status_code,201)
   rubric_id=self.c.get(f'/api/rubrics/{exam_id}').get_json()['data'][0]['id']; self.assertEqual(self.c.put(f'/api/rubrics/{rubric_id}',json={'max_marks':101}).status_code,400)
   self.assertEqual(self.c.post('/api/examiners',json={'name':'Examiner','email':'examiner@test.local','password':'secret1'}).status_code,201)
+  examiner_id=self.c.get('/api/examiners').get_json()['data'][0]['id']
+  self.assertEqual(self.c.post(f'/api/examinations/{exam_id}/assign',json={'examiner_id':examiner_id}).status_code,200)
   self.c.post('/api/auth/logout'); self.assertEqual(self.c.post('/api/auth/login',json={'email':'examiner@test.local','password':'secret1'}).status_code,200)
   self.assertEqual(self.c.post('/api/slots',json={'examination_id':'Oral Exam','date':'2099-01-01','start_time':'10:00','end_time':'10:30','capacity':1}).status_code,201)
   slot_id=self.c.get('/api/slots').get_json()['data'][0]['id']
+  self.c.post('/api/auth/logout'); self.c.post('/api/auth/login',json={'email':'admin@emp.local','password':'Admin@123'})
+  self.assertEqual(self.c.put(f'/api/examinations/{exam_id}',json={'status':'Booking Open'}).status_code,200)
   self.c.post('/api/auth/logout'); self.c.post('/api/auth/register',json={'name':'Student','email':'student@test.local','password':'secret1'}); self.c.post('/api/auth/login',json={'email':'student@test.local','password':'secret1'})
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,201)
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,400)
@@ -30,6 +34,7 @@ class PortalTest(unittest.TestCase):
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,400)
   self.c.post('/api/auth/logout'); self.c.post('/api/auth/login',json={'email':'student@test.local','password':'secret1'})
   booking_id=self.c.get('/api/bookings').get_json()['data'][0]['id']
+  self.assertEqual(self.c.get(f'/api/bookings/{booking_id}/history').status_code,200)
   self.assertEqual(self.c.post(f'/api/bookings/{booking_id}/cancel').status_code,200)
   self.assertEqual(self.c.post('/api/bookings',json={'slot_id':slot_id}).status_code,201)
   booking_id=self.c.get('/api/bookings').get_json()['data'][0]['id']
